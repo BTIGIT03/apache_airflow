@@ -242,7 +242,6 @@ def _run_raw_task(
     ti.test_mode = test_mode
     ti.refresh_from_task(ti.task, pool_override=pool)
     ti.refresh_from_db(session=session)
-
     ti.job_id = job_id
     ti.hostname = get_hostname()
     ti.pid = os.getpid()
@@ -800,7 +799,7 @@ def _execute_task(task_instance: TaskInstance | TaskInstancePydantic, context: C
     return result
 
 
-def _set_ti_attrs(target, source):
+def _set_ti_attrs(target, source, include_dag_run=False):
     # Fields ordered per model definition
     target.start_date = source.start_date
     target.end_date = source.end_date
@@ -827,6 +826,27 @@ def _set_ti_attrs(target, source):
     target.next_method = source.next_method
     target.next_kwargs = source.next_kwargs
 
+    if include_dag_run:
+        target.execution_date = source.execution_date
+        target.dag_run.id = source.dag_run.id
+        target.dag_run.dag_id = source.dag_run.dag_id
+        target.dag_run.queued_at = source.dag_run.queued_at
+        target.dag_run.execution_date = source.dag_run.execution_date
+        target.dag_run.start_date = source.dag_run.start_date
+        target.dag_run.end_date = source.dag_run.end_date
+        target.dag_run.state = source.dag_run.state
+        target.dag_run.run_id = source.dag_run.run_id
+        target.dag_run.creating_job_id = source.dag_run.creating_job_id
+        target.dag_run.external_trigger = source.dag_run.external_trigger
+        target.dag_run.run_type = source.dag_run.run_type
+        target.dag_run.conf = source.dag_run.conf
+        target.dag_run.data_interval_start = source.dag_run.data_interval_start
+        target.dag_run.data_interval_end = source.dag_run.data_interval_end
+        target.dag_run.last_scheduling_decision = source.dag_run.last_scheduling_decision
+        target.dag_run.dag_hash = source.dag_run.dag_hash
+        target.dag_run.updated_at = source.dag_run.updated_at
+        target.dag_run.log_template_id = source.dag_run.log_template_id
+
 
 def _refresh_from_db(
     *,
@@ -845,8 +865,9 @@ def _refresh_from_db(
 
     :meta private:
     """
-    if session and task_instance in session:
-        session.refresh(task_instance, TaskInstance.__mapper__.column_attrs.keys())
+    if not InternalApiConfig.get_use_internal_api():
+        if session and task_instance in session:
+            session.refresh(task_instance, TaskInstance.__mapper__.column_attrs.keys())
 
     ti = TaskInstance.get_task_instance(
         dag_id=task_instance.dag_id,
@@ -858,7 +879,14 @@ def _refresh_from_db(
     )
 
     if ti:
-        _set_ti_attrs(task_instance, ti)
+        from airflow.serialization.pydantic.taskinstance import TaskInstancePydantic
+
+        include_dag_run = isinstance(ti, TaskInstancePydantic)
+        # in case of internal API, what we get is TaskInstancePydantic value, and we are supposed
+        # to also update dag_run information as it might not be available. We cannot always do it in
+        # case ti is TaskInstance, because it might be detached/ not loaded yet and dag_run might
+        # not be available.
+        _set_ti_attrs(task_instance, ti, include_dag_run=include_dag_run)
     else:
         task_instance.state = None
 
@@ -1374,6 +1402,25 @@ def _get_previous_execution_date(
     log.debug("previous_execution_date was called")
     prev_ti = task_instance.get_previous_ti(state=state, session=session)
     return pendulum.instance(prev_ti.execution_date) if prev_ti and prev_ti.execution_date else None
+
+
+def _get_previous_start_date(
+    *,
+    task_instance: TaskInstance | TaskInstancePydantic,
+    state: DagRunState | None,
+    session: Session,
+) -> pendulum.DateTime | None:
+    """
+    Return the start date from property previous_ti_success.
+
+    :param task_instance: the task instance
+    :param state: If passed, it only take into account instances of a specific state.
+    :param session: SQLAlchemy ORM Session
+    """
+    log.debug("previous_start_date was called")
+    prev_ti = task_instance.get_previous_ti(state=state, session=session)
+    # prev_ti may not exist and prev_ti.start_date may be None.
+    return pendulum.instance(prev_ti.start_date) if prev_ti and prev_ti.start_date else None
 
 
 def _email_alert(
@@ -2505,10 +2552,7 @@ class TaskInstance(Base, LoggingMixin):
         :param state: If passed, it only take into account instances of a specific state.
         :param session: SQLAlchemy ORM Session
         """
-        self.log.debug("previous_start_date was called")
-        prev_ti = self.get_previous_ti(state=state, session=session)
-        # prev_ti may not exist and prev_ti.start_date may be None.
-        return pendulum.instance(prev_ti.start_date) if prev_ti and prev_ti.start_date else None
+        return _get_previous_start_date(task_instance=self, state=state, session=session)
 
     @property
     def previous_start_date_success(self) -> pendulum.DateTime | None:
@@ -2732,7 +2776,7 @@ class TaskInstance(Base, LoggingMixin):
         else:  # isinstance(task_instance, TaskInstancePydantic)
             filters = (col == getattr(task_instance, col.name) for col in inspect(TaskInstance).primary_key)
             ti = session.query(TaskInstance).filter(*filters).scalar()
-            dag = ti.dag_model.serialized_dag.dag
+            dag = DagBag(read_dags_from_db=True).get_dag(task_instance.dag_id, session=session)
             task_instance.task = dag.task_dict[ti.task_id]
             ti.task = task_instance.task
         task = task_instance.task
@@ -2996,7 +3040,7 @@ class TaskInstance(Base, LoggingMixin):
             if not dataset_obj:
                 dataset_obj = DatasetModel(uri=uri)
                 dataset_manager.create_datasets(dataset_models=[dataset_obj], session=session)
-                self.log.warning('Created a new Dataset(uri="%s") as it did not exists.', uri)
+                self.log.warning("Created a new %r as it did not exist.", dataset_obj)
                 dataset_objs_cache[uri] = dataset_obj
 
             for alias in alias_names:
@@ -3007,9 +3051,8 @@ class TaskInstance(Base, LoggingMixin):
 
             extra = {k: v for k, v in extra_items}
             self.log.info(
-                'Create dataset event Dataset(uri="%s", extra="%s") through dataset aliases "%s"',
-                uri,
-                extra,
+                'Creating event for %r through aliases "%s"',
+                dataset_obj,
                 ", ".join(alias_names),
             )
             dataset_manager.register_dataset_change(
@@ -3252,10 +3295,6 @@ class TaskInstance(Base, LoggingMixin):
 
         :param fail_stop: if true, stop remaining tasks in dag
         """
-        get_listener_manager().hook.on_task_instance_failed(
-            previous_state=TaskInstanceState.RUNNING, task_instance=ti, error=error, session=session
-        )
-
         if error:
             if isinstance(error, BaseException):
                 tb = TaskInstance.get_truncated_error_traceback(error, truncate_to=ti._execute_task)
@@ -3329,6 +3368,10 @@ class TaskInstance(Base, LoggingMixin):
             email_for_state = operator.attrgetter("email_on_retry")
             callbacks = task.on_retry_callback if task else None
 
+        get_listener_manager().hook.on_task_instance_failed(
+            previous_state=TaskInstanceState.RUNNING, task_instance=ti, error=error, session=session
+        )
+
         return {
             "ti": ti,
             "email_for_state": email_for_state,
@@ -3342,6 +3385,7 @@ class TaskInstance(Base, LoggingMixin):
     @provide_session
     def save_to_db(ti: TaskInstance | TaskInstancePydantic, session: Session = NEW_SESSION):
         ti = _coalesce_to_orm_ti(ti=ti, session=session)
+        ti.updated_at = timezone.utcnow()
         session.merge(ti)
         session.flush()
         session.commit()
@@ -3864,9 +3908,19 @@ class TaskInstance(Base, LoggingMixin):
 
         :meta: private
         """
-        return TaskInstance._schedule_downstream_tasks(
-            ti=self, session=session, max_tis_per_query=max_tis_per_query
-        )
+        try:
+            return TaskInstance._schedule_downstream_tasks(
+                ti=self, session=session, max_tis_per_query=max_tis_per_query
+            )
+        except Exception:
+            self.log.exception(
+                "Error scheduling downstream tasks. Skipping it as this is entirely optional optimisation. "
+                "There might be various reasons for it, please take a look at the stack trace to figure "
+                "out if the root cause can be diagnosed and fixed. See the issue "
+                "https://github.com/apache/airflow/issues/39717 for details and an example problem. If you "
+                "would like to get help in solving root cause, open discussion with all details with your "
+                "managed service support or in Airflow repository."
+            )
 
     def get_relevant_upstream_map_indexes(
         self,

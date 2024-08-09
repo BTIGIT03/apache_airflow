@@ -31,11 +31,16 @@ import { getMetaValue } from "src/utils";
 
 type SourceTIProps = {
   datasetEvent: DatasetEvent;
+  showLink?: boolean;
 };
 
 const gridUrl = getMetaValue("grid_url");
+const dagId = getMetaValue("dag_id") || "__DAG_ID__";
 
-const SourceTaskInstance = ({ datasetEvent }: SourceTIProps) => {
+const SourceTaskInstance = ({
+  datasetEvent,
+  showLink = true,
+}: SourceTIProps) => {
   const containerRef = useContainerRef();
   const { sourceDagId, sourceRunId, sourceTaskId, sourceMapIndex } =
     datasetEvent;
@@ -52,7 +57,7 @@ const SourceTaskInstance = ({ datasetEvent }: SourceTIProps) => {
   });
 
   let url = `${gridUrl?.replace(
-    "__DAG_ID__",
+    dagId,
     sourceDagId || ""
   )}?dag_run_id=${encodeURIComponent(
     sourceRunId || ""
@@ -80,11 +85,13 @@ const SourceTaskInstance = ({ datasetEvent }: SourceTIProps) => {
           hasArrow
           placement="top"
         >
-          <Flex width="30px">
+          <Flex width={showLink ? "30px" : "16px"}>
             <SimpleStatus state={taskInstance.state} mx={1} />
-            <Link color="blue.600" href={url}>
-              <FiLink size="12px" />
-            </Link>
+            {showLink && (
+              <Link color="blue.600" href={url}>
+                <FiLink size="12px" />
+              </Link>
+            )}
           </Flex>
         </Tooltip>
       )}

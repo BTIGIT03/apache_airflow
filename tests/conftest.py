@@ -61,6 +61,7 @@ if not keep_env_variables:
             {
                 "core": {
                     "internal_api_url",
+                    "fernet_key",
                     "database_access_isolation",
                     "internal_api_secret_key",
                     "internal_api_clock_grace",
@@ -233,6 +234,12 @@ def set_db_isolation_mode():
         from airflow.api_internal.internal_api_call import InternalApiConfig
 
         InternalApiConfig.set_use_internal_api("tests", allow_tests_to_use_db=True)
+
+
+def skip_if_database_isolation_mode(item):
+    if os.environ.get("RUN_TESTS_WITH_DATABASE_ISOLATION", "false").lower() == "true":
+        for _ in item.iter_markers(name="skip_if_database_isolation_mode"):
+            pytest.skip("This test is skipped because it is not allowed in database isolation mode.")
 
 
 def pytest_addoption(parser: pytest.Parser):
@@ -458,6 +465,7 @@ def pytest_configure(config: pytest.Config) -> None:
         "external_python_operator: external python operator tests are 'long', we should run them separately",
     )
     config.addinivalue_line("markers", "enable_redact: do not mock redact secret masker")
+    config.addinivalue_line("markers", "skip_if_database_isolation_mode: skip if DB isolation is enabled")
 
     os.environ["_AIRFLOW__SKIP_DATABASE_EXECUTOR_COMPATIBILITY_CHECK"] = "1"
 
@@ -697,6 +705,7 @@ def pytest_runtest_setup(item):
         skip_if_platform_doesnt_match(marker)
     for marker in item.iter_markers(name="backend"):
         skip_if_wrong_backend(marker, item)
+    skip_if_database_isolation_mode(item)
     selected_backend = item.config.option.backend
     if selected_backend:
         skip_if_not_marked_with_backend(selected_backend, item)
@@ -897,6 +906,8 @@ def dag_maker(request):
             self.dag_run = dag.create_dagrun(**kwargs)
             for ti in self.dag_run.task_instances:
                 ti.refresh_from_task(dag.get_task(ti.task_id))
+            if self.want_serialized:
+                self.session.commit()
             return self.dag_run
 
         def create_dagrun_after(self, dagrun, **kwargs):
@@ -1071,6 +1082,7 @@ def create_task_instance(dag_maker, create_dummy_dag):
 
     Uses ``create_dummy_dag`` to create the dag structure.
     """
+    from airflow.operators.empty import EmptyOperator
 
     def maker(
         execution_date=None,
@@ -1080,6 +1092,19 @@ def create_task_instance(dag_maker, create_dummy_dag):
         run_type=None,
         data_interval=None,
         external_executor_id=None,
+        dag_id="dag",
+        task_id="op1",
+        task_display_name=None,
+        max_active_tis_per_dag=16,
+        max_active_tis_per_dagrun=None,
+        pool="default_pool",
+        executor_config=None,
+        trigger_rule="all_done",
+        on_success_callback=None,
+        on_execute_callback=None,
+        on_failure_callback=None,
+        on_retry_callback=None,
+        email=None,
         map_index=-1,
         **kwargs,
     ) -> TaskInstance:
@@ -1087,7 +1112,26 @@ def create_task_instance(dag_maker, create_dummy_dag):
             from airflow.utils import timezone
 
             execution_date = timezone.utcnow()
-        _, task = create_dummy_dag(with_dagrun_type=None, **kwargs)
+        with dag_maker(dag_id, **kwargs):
+            op_kwargs = {}
+            from tests.test_utils.compat import AIRFLOW_V_2_9_PLUS
+
+            if AIRFLOW_V_2_9_PLUS:
+                op_kwargs["task_display_name"] = task_display_name
+            task = EmptyOperator(
+                task_id=task_id,
+                max_active_tis_per_dag=max_active_tis_per_dag,
+                max_active_tis_per_dagrun=max_active_tis_per_dagrun,
+                executor_config=executor_config or {},
+                on_success_callback=on_success_callback,
+                on_execute_callback=on_execute_callback,
+                on_failure_callback=on_failure_callback,
+                on_retry_callback=on_retry_callback,
+                email=email,
+                pool=pool,
+                trigger_rule=trigger_rule,
+                **op_kwargs,
+            )
 
         dagrun_kwargs = {"execution_date": execution_date, "state": dagrun_state}
         if run_id is not None:
@@ -1110,6 +1154,28 @@ def create_task_instance(dag_maker, create_dummy_dag):
 
 
 @pytest.fixture
+def create_serialized_task_instance_of_operator(dag_maker):
+    def _create_task_instance(
+        operator_class,
+        *,
+        dag_id,
+        execution_date=None,
+        session=None,
+        **operator_kwargs,
+    ) -> TaskInstance:
+        with dag_maker(dag_id=dag_id, serialized=True, session=session):
+            operator_class(**operator_kwargs)
+        if execution_date is None:
+            dagrun_kwargs = {}
+        else:
+            dagrun_kwargs = {"execution_date": execution_date}
+        (ti,) = dag_maker.create_dagrun(**dagrun_kwargs).task_instances
+        return ti
+
+    return _create_task_instance
+
+
+@pytest.fixture
 def create_task_instance_of_operator(dag_maker):
     def _create_task_instance(
         operator_class,
@@ -1119,7 +1185,7 @@ def create_task_instance_of_operator(dag_maker):
         session=None,
         **operator_kwargs,
     ) -> TaskInstance:
-        with dag_maker(dag_id=dag_id, session=session):
+        with dag_maker(dag_id=dag_id, session=session, serialized=True):
             operator_class(**operator_kwargs)
         if execution_date is None:
             dagrun_kwargs = {}
@@ -1181,6 +1247,10 @@ def create_log_template(request):
         session.commit()
 
         def _delete_log_template():
+            from airflow.models import DagRun, TaskInstance
+
+            session.query(TaskInstance).delete()
+            session.query(DagRun).delete()
             session.delete(log_template)
             session.commit()
 
@@ -1397,3 +1467,15 @@ if TYPE_CHECKING:
     # time-machine
     @pytest.fixture  # type: ignore[no-redef]
     def time_machine() -> TimeMachineFixture: ...
+
+
+@pytest.fixture
+def clean_dags_and_dagruns():
+    """Fixture that cleans the database before and after every test."""
+    from tests.test_utils.db import clear_db_dags, clear_db_runs
+
+    clear_db_runs()
+    clear_db_dags()
+    yield  # Test runs here
+    clear_db_dags()
+    clear_db_runs()

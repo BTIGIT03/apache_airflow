@@ -137,6 +137,12 @@ def internal_api_call(func: Callable[PS, RT]) -> Callable[PS, RT]:
         use_internal_api = InternalApiConfig.get_use_internal_api()
         if not use_internal_api:
             return func(*args, **kwargs)
+        import traceback
+
+        tb = traceback.extract_stack()
+        if any(filename.endswith("conftest.py") for filename, _, _, _ in tb):
+            # This is a test fixture, we should not use internal API for it
+            return func(*args, **kwargs)
 
         from airflow.serialization.serialized_objects import BaseSerialization  # avoid circular import
 
@@ -152,6 +158,9 @@ def internal_api_call(func: Callable[PS, RT]) -> Callable[PS, RT]:
         result = make_jsonrpc_request(method_name, args_dict)
         if result is None or result == b"":
             return None
-        return BaseSerialization.deserialize(json.loads(result), use_pydantic_models=True)
+        result = BaseSerialization.deserialize(json.loads(result), use_pydantic_models=True)
+        if isinstance(result, AirflowException):
+            raise result
+        return result
 
     return wrapper

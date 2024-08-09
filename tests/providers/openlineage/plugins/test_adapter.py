@@ -45,7 +45,10 @@ from airflow.operators.empty import EmptyOperator
 from airflow.providers.openlineage.conf import namespace
 from airflow.providers.openlineage.extractors import OperatorLineage
 from airflow.providers.openlineage.plugins.adapter import _PRODUCER, OpenLineageAdapter
-from airflow.providers.openlineage.plugins.facets import AirflowDagRunFacet, AirflowStateRunFacet
+from airflow.providers.openlineage.plugins.facets import (
+    AirflowDagRunFacet,
+    AirflowStateRunFacet,
+)
 from airflow.providers.openlineage.utils.utils import get_airflow_job_facet
 from airflow.utils.task_group import TaskGroup
 from tests.test_utils.config import conf_vars
@@ -584,6 +587,7 @@ def test_emit_dag_started_event(mock_stats_incr, mock_stats_timer, generate_stat
                                 "schedule_interval": "86400.0 seconds",
                                 "start_date": "2024-06-01T00:00:00+00:00",
                                 "tags": [],
+                                "fileloc": pathlib.Path(__file__).resolve().as_posix(),
                             },
                             dagRun={
                                 "conf": {},

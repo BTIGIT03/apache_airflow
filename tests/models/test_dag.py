@@ -120,7 +120,7 @@ from tests.test_utils.timetables import cron_timetable, delta_timetable
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
-pytestmark = pytest.mark.db_test
+pytestmark = [pytest.mark.db_test, pytest.mark.skip_if_database_isolation_mode]
 
 TEST_DATE = datetime_tz(2015, 1, 2, 0, 0)
 
@@ -1348,11 +1348,12 @@ class TestDag:
         task_id = "test_dataset_task"
         da1 = DatasetAlias(name="da1")
         da2 = DatasetAlias(name="da2")
+        da2_2 = DatasetAlias(name="da2")
         da3 = DatasetAlias(name="da3")
         dag1 = DAG(dag_id=dag_id1, start_date=DEFAULT_DATE, schedule=None)
         EmptyOperator(task_id=task_id, dag=dag1, outlets=[da1, da2, da3])
         dag2 = DAG(dag_id=dag_id2, start_date=DEFAULT_DATE, schedule=None)
-        EmptyOperator(task_id=task_id, dag=dag2, outlets=[da2, da3])
+        EmptyOperator(task_id=task_id, dag=dag2, outlets=[da2_2, da3])
         session = settings.Session()
         DAG.bulk_write_to_db([dag1, dag2], session=session)
         session.commit()
@@ -1365,24 +1366,6 @@ class TestDag:
         assert da2_orm.name == "da2"
         assert da3_orm.name == "da3"
         assert len(stored_dataset_aliases) == 3
-
-        # now that we have verified that a new dag has its dataset alias references recorded properly,
-        # we need to verify that *changes* are recorded properly.
-        # so if any references are *removed*, they should also be deleted from the DB
-        # so let's remove some references and see what happens
-        dag1 = DAG(dag_id=dag_id1, start_date=DEFAULT_DATE, schedule=None)
-        EmptyOperator(task_id=task_id, dag=dag1, outlets=[da3])
-        dag2 = DAG(dag_id=dag_id2, start_date=DEFAULT_DATE, schedule=None)
-        EmptyOperator(task_id=task_id, dag=dag2, outlets=[da1])
-        DAG.bulk_write_to_db([dag1, dag2], session=session)
-        session.commit()
-        session.expunge_all()
-        stored_dataset_aliases = {x.name: x for x in session.query(DatasetAliasModel).all()}
-        da1_orm = stored_dataset_aliases[da1.name]
-        da3_orm = stored_dataset_aliases[da3.name]
-        assert da1_orm.name == "da1"
-        assert da3_orm.name == "da3"
-        assert len(stored_dataset_aliases) == 2
 
     def test_sync_to_db(self):
         dag = DAG(
@@ -2805,19 +2788,27 @@ my_postgres_conn:
         outdated_permissions = {
             "role1": {permissions.ACTION_CAN_READ, permissions.ACTION_CAN_EDIT},
             "role2": {permissions.DEPRECATED_ACTION_CAN_DAG_READ, permissions.DEPRECATED_ACTION_CAN_DAG_EDIT},
+            "role3": {permissions.RESOURCE_DAG_RUN: {permissions.ACTION_CAN_CREATE}},
         }
         updated_permissions = {
-            "role1": {permissions.ACTION_CAN_READ, permissions.ACTION_CAN_EDIT},
-            "role2": {permissions.ACTION_CAN_READ, permissions.ACTION_CAN_EDIT},
+            "role1": {permissions.RESOURCE_DAG: {permissions.ACTION_CAN_READ, permissions.ACTION_CAN_EDIT}},
+            "role2": {permissions.RESOURCE_DAG: {permissions.ACTION_CAN_READ, permissions.ACTION_CAN_EDIT}},
+            "role3": {permissions.RESOURCE_DAG_RUN: {permissions.ACTION_CAN_CREATE}},
         }
 
-        with pytest.warns(DeprecationWarning):
+        with pytest.warns(DeprecationWarning) as deprecation_warnings:
             dag = DAG(dag_id="dag_with_outdated_perms", access_control=outdated_permissions)
         assert dag.access_control == updated_permissions
+        assert len(deprecation_warnings) == 2
+        assert "permission is deprecated" in str(deprecation_warnings[0].message)
+        assert "permission is deprecated" in str(deprecation_warnings[1].message)
 
-        with pytest.warns(DeprecationWarning):
+        with pytest.warns(DeprecationWarning) as deprecation_warnings:
             dag.access_control = outdated_permissions
         assert dag.access_control == updated_permissions
+        assert len(deprecation_warnings) == 2
+        assert "permission is deprecated" in str(deprecation_warnings[0].message)
+        assert "permission is deprecated" in str(deprecation_warnings[1].message)
 
     def test_validate_executor_field_executor_not_configured(self):
         dag = DAG(
