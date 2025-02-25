@@ -32,8 +32,6 @@ from shutil import copyfile
 from time import time
 from typing import Any, NamedTuple
 
-import jinja2
-import semver
 from rich.syntax import Syntax
 
 from airflow_breeze.utils.black_utils import black_format
@@ -43,15 +41,14 @@ from airflow_breeze.utils.packages import (
     HTTPS_REMOTE,
     ProviderPackageDetails,
     clear_cache_for_provider_metadata,
-    get_old_source_providers_package_path,
     get_provider_details,
     get_provider_jinja_context,
     get_provider_yaml,
     refresh_provider_metadata_from_yaml_file,
-    refresh_provider_metadata_with_provider_id,
+    regenerate_pyproject_toml,
     render_template,
 )
-from airflow_breeze.utils.path_utils import AIRFLOW_SOURCES_ROOT
+from airflow_breeze.utils.path_utils import AIRFLOW_SOURCES_ROOT, BREEZE_SOURCES_DIR
 from airflow_breeze.utils.run_utils import run_command
 from airflow_breeze.utils.shared_options import get_verbose
 from airflow_breeze.utils.versions import get_version_tag
@@ -143,9 +140,11 @@ def get_most_impactful_change(changes: list[TypeOfChange]):
 
 
 def format_message_for_classification(message):
-    num = re.search(r"#(\d+)", message).group(1)
-    new_message = re.sub(r"#(\d+)", f"https://github.com/apache/airflow/pull/{num}", message)
-    return new_message
+    find_pr = re.search(r"#(\d+)", message)
+    if find_pr:
+        num = find_pr.group(1)
+        message = re.sub(r"#(\d+)", f"https://github.com/apache/airflow/pull/{num}", message)
+    return message
 
 
 class ClassifiedChanges:
@@ -268,7 +267,7 @@ def _convert_git_changes_to_table(
             (
                 f"[{change.short_hash}]({base_url}{change.full_hash})"
                 if markdown
-                else f"`{change.short_hash} <{base_url}{change.full_hash}>`_",
+                else f"`{change.short_hash} <{base_url}{change.full_hash}>`__",
                 change.date,
                 f"`{change.message_without_backticks}`"
                 if markdown
@@ -322,8 +321,8 @@ def _get_all_changes_for_package(
     )
     providers_folder_paths_for_git_commit_retrieval = [
         provider_details.root_provider_path,
-        provider_details.old_source_provider_package_path,
-        provider_details.old_documentation_provider_package_path,
+        provider_details.previous_source_provider_package_path,
+        provider_details.previous_documentation_provider_package_path,
         provider_details.original_source_provider_package_path,
     ]
     if not reapply_templates_only and result.returncode == 0:
@@ -344,14 +343,9 @@ def _get_all_changes_for_package(
         changes = result.stdout.strip()
         if changes:
             provider_details = get_provider_details(provider_package_id)
-            if provider_details.is_new_structure:
-                doc_only_change_file = (
-                    provider_details.root_provider_path / "docs" / ".latest-doc-only-change.txt"
-                )
-            else:
-                doc_only_change_file = (
-                    provider_details.base_provider_package_path / ".latest-doc-only-change.txt"
-                )
+            doc_only_change_file = (
+                provider_details.root_provider_path / "docs" / ".latest-doc-only-change.txt"
+            )
             if doc_only_change_file.exists():
                 last_doc_only_hash = doc_only_change_file.read_text().strip()
                 try:
@@ -485,14 +479,7 @@ def _mark_latest_changes_as_documentation_only(
         f"[special]Marking last change: {latest_change.short_hash} and all above "
         f"changes since the last release as doc-only changes!"
     )
-    if provider_details.is_new_structure:
-        latest_doc_onl_change_file = (
-            provider_details.root_provider_path / "docs" / ".latest-doc-only-change.txt"
-        )
-    else:
-        latest_doc_onl_change_file = (
-            provider_details.base_provider_package_path / ".latest-doc-only-change.txt"
-        )
+    latest_doc_onl_change_file = provider_details.root_provider_path / "docs" / ".latest-doc-only-change.txt"
 
     latest_doc_onl_change_file.write_text(latest_change.full_hash + "\n")
     raise PrepareReleaseDocsChangesOnlyException()
@@ -510,6 +497,8 @@ def _update_version_in_provider_yaml(
     """
     provider_details = get_provider_details(provider_id)
     version = provider_details.versions[0]
+    import semver
+
     v = semver.VersionInfo.parse(version)
     with_breaking_changes = False
     maybe_with_new_features = False
@@ -525,12 +514,12 @@ def _update_version_in_provider_yaml(
         v = v.bump_patch()
     elif type_of_change == TypeOfChange.MISC:
         v = v.bump_patch()
-    provider_yaml_path, is_new_structure = get_provider_yaml(provider_id)
+    provider_yaml_path = get_provider_yaml(provider_id)
     original_provider_yaml_content = provider_yaml_path.read_text()
-    new_provider_yaml_content = re.sub(
+    updated_provider_yaml_content = re.sub(
         r"^versions:", f"versions:\n  - {v}", original_provider_yaml_content, 1, re.MULTILINE
     )
-    provider_yaml_path.write_text(new_provider_yaml_content)
+    provider_yaml_path.write_text(updated_provider_yaml_content)
     get_console().print(f"[special]Bumped version to {v}\n")
     return with_breaking_changes, maybe_with_new_features, original_provider_yaml_content
 
@@ -543,24 +532,26 @@ def _update_source_date_epoch_in_provider_yaml(
 
     :param provider_id: provider package
     """
-    provider_yaml_path, is_new_structure = get_provider_yaml(provider_id)
+    provider_yaml_path = get_provider_yaml(provider_id)
     original_text = provider_yaml_path.read_text()
     source_date_epoch = int(time())
     new_text = re.sub(
         r"source-date-epoch: [0-9]*", f"source-date-epoch: {source_date_epoch}", original_text, 1
     )
     provider_yaml_path.write_text(new_text)
-    refresh_provider_metadata_with_provider_id(provider_id)
+    refresh_provider_metadata_from_yaml_file(provider_yaml_path)
     get_console().print(f"[special]Updated source-date-epoch to {source_date_epoch}\n")
 
 
 def _verify_changelog_exists(package: str) -> Path:
     provider_details = get_provider_details(package)
-    changelog_path = Path(provider_details.root_provider_path) / "CHANGELOG.rst"
+    changelog_path = Path(provider_details.root_provider_path) / "docs" / "changelog.rst"
     if not os.path.isfile(changelog_path):
         get_console().print(f"\n[error]ERROR: Missing {changelog_path}[/]\n")
         get_console().print("[info]Please add the file with initial content:")
         get_console().print("----- START COPYING AFTER THIS LINE ------- ")
+        import jinja2
+
         processed_changelog = jinja2.Template(INITIAL_CHANGELOG_CONTENT, autoescape=True).render(
             package_name=provider_details.pypi_package_name,
         )
@@ -659,45 +650,27 @@ def _update_file(
         )
         raise PrepareReleaseDocsErrorOccurredException()
 
-    # TODO: uncomment me. Linting revealed that our already generated provider docs have duplicate links
-    #       in the generated files, we should fix those and uncomment linting as separate step - so that
-    #       we do not hold current release for fixing the docs.
-    # console.print(f"Linting: {file_path}")
-    # errors = restructuredtext_lint.lint_file(file_path)
-    # real_errors = False
-    # if errors:
-    #     for error in errors:
-    #         # Skip known issue: linter with doc role similar to https://github.com/OCA/pylint-odoo/issues/38
-    #         if (
-    #             'No role entry for "doc"' in error.message
-    #             or 'Unknown interpreted text role "doc"' in error.message
-    #         ):
-    #             continue
-    #         real_errors = True
-    #         console.print(f"* [red] {error.message}")
-    #     if real_errors:
-    #         console.print(f"\n[red] Errors found in {file_path}")
-    #         raise PrepareReleaseDocsErrorOccurredException()
+    get_console().print(f"Linting: {target_file_path}")
+    import restructuredtext_lint
+
+    errors = restructuredtext_lint.lint_file(target_file_path.as_posix())
+    real_errors = False
+    if errors:
+        for error in errors:
+            # Skip known issue: linter with doc role similar to https://github.com/OCA/pylint-odoo/issues/38
+            if (
+                'No role entry for "doc"' in error.message
+                or 'Unknown interpreted text role "doc"' in error.message
+            ):
+                continue
+            real_errors = True
+            get_console().print(f"* [red] {error.message}")
+        if real_errors:
+            get_console().print(f"\n[red] Errors found in {target_file_path}")
+            raise PrepareReleaseDocsErrorOccurredException()
 
     get_console().print(f"[success]Generated {target_file_path} for {provider_package_id} is OK[/]")
     return
-
-
-def _update_changelog_rst(
-    context: dict[str, Any],
-    provider_package_id: str,
-    target_path: Path,
-    regenerate_missing_docs: bool,
-) -> None:
-    _update_file(
-        context=context,
-        template_name="PROVIDER_CHANGELOG",
-        extension=".rst",
-        file_name="changelog.rst",
-        provider_package_id=provider_package_id,
-        target_path=target_path,
-        regenerate_missing_docs=regenerate_missing_docs,
-    )
 
 
 def _update_commits_rst(
@@ -841,13 +814,12 @@ def update_release_notes(
     else:
         answer = Answer.YES
 
+    provider_yaml_path = get_provider_yaml(provider_package_id)
     if answer == Answer.NO:
         if original_provider_yaml_content is not None:
             # Restore original content of the provider.yaml
-            (get_old_source_providers_package_path(provider_package_id) / "provider.yaml").write_text(
-                original_provider_yaml_content
-            )
-            clear_cache_for_provider_metadata(provider_package_id)
+            provider_yaml_path.write_text(original_provider_yaml_content)
+            clear_cache_for_provider_metadata(provider_yaml_path=provider_yaml_path)
 
         type_of_change = _ask_the_user_for_the_type_of_changes(non_interactive=False)
         if type_of_change == TypeOfChange.SKIP:
@@ -889,13 +861,6 @@ def update_release_notes(
     )
     jinja_context["DETAILED_CHANGES_RST"] = changes_as_table
     jinja_context["DETAILED_CHANGES_PRESENT"] = bool(changes_as_table)
-    if not provider_details.is_new_structure:
-        _update_changelog_rst(
-            jinja_context,
-            provider_package_id,
-            provider_details.documentation_provider_package_path,
-            regenerate_missing_docs,
-        )
     _update_commits_rst(
         jinja_context,
         provider_package_id,
@@ -1128,7 +1093,7 @@ def update_changelog(
     _update_index_rst(jinja_context, package_id, provider_details.documentation_provider_package_path)
 
 
-def _generate_get_provider_info_py(context, provider_details):
+def _generate_get_provider_info_py(context: dict[str, Any], provider_details: ProviderPackageDetails):
     get_provider_info_content = black_format(
         render_template(
             template_name="get_provider_info",
@@ -1145,7 +1110,7 @@ def _generate_get_provider_info_py(context, provider_details):
     )
 
 
-def _generate_readme_rst(context, provider_details):
+def _generate_readme_rst(context: dict[str, Any], provider_details: ProviderPackageDetails):
     get_provider_readme_content = render_template(
         template_name="PROVIDER_README",
         context=context,
@@ -1156,29 +1121,6 @@ def _generate_readme_rst(context, provider_details):
     get_provider_readme_path.write_text(get_provider_readme_content)
     get_console().print(
         f"[info]Generated {get_provider_readme_path} for the {provider_details.provider_id} provider\n"
-    )
-
-
-def _generate_pyproject(context, provider_details):
-    get_pyproject_toml_path = provider_details.root_provider_path / "pyproject.toml"
-    try:
-        import tomllib
-    except ImportError:
-        import tomli as tomllib
-    old_toml_content = tomllib.loads(get_pyproject_toml_path.read_text())
-    old_dependencies = old_toml_content["project"]["dependencies"]
-    install_requirements = "".join(f'\n    "{ir}",' for ir in old_dependencies)
-    context["INSTALL_REQUIREMENTS"] = install_requirements
-    get_pyproject_toml_content = render_template(
-        template_name="pyproject",
-        context=context,
-        extension=".toml",
-        autoescape=False,
-        keep_trailing_newline=True,
-    )
-    get_pyproject_toml_path.write_text(get_pyproject_toml_content)
-    get_console().print(
-        f"[info]Generated {get_pyproject_toml_path} for the {provider_details.provider_id} provider\n"
     )
 
 
@@ -1196,19 +1138,19 @@ def _generate_build_files_for_provider(
     )
     init_py_path = provider_details.base_provider_package_path / "__init__.py"
     init_py_path.write_text(init_py_content)
-    # TODO(potiuk) - remove this if when we move all providers to new structure
-    if provider_details.is_new_structure:
-        _generate_get_provider_info_py(context, provider_details)
-        _generate_readme_rst(context, provider_details)
-        _generate_pyproject(context, provider_details)
-        shutil.copy(AIRFLOW_SOURCES_ROOT / "LICENSE", provider_details.base_provider_package_path / "LICENSE")
+    _generate_readme_rst(context, provider_details)
+    regenerate_pyproject_toml(context, provider_details, version_suffix=None)
+    _generate_get_provider_info_py(context, provider_details)
+    shutil.copy(
+        BREEZE_SOURCES_DIR / "airflow_breeze" / "templates" / "PROVIDER_LICENSE.txt",
+        provider_details.base_provider_package_path / "LICENSE",
+    )
 
 
 def _replace_min_airflow_version_in_provider_yaml(
     context: dict[str, Any],
-    target_path: Path,
+    provider_yaml_path: Path,
 ):
-    provider_yaml_path = target_path / "provider.yaml"
     provider_yaml_txt = provider_yaml_path.read_text()
     provider_yaml_txt = re.sub(
         r" {2}- apache-airflow>=.*",
@@ -1242,5 +1184,5 @@ def update_min_airflow_version_and_build_files(
         provider_details=provider_details,
     )
     _replace_min_airflow_version_in_provider_yaml(
-        context=jinja_context, target_path=provider_details.root_provider_path
+        context=jinja_context, provider_yaml_path=provider_details.provider_yaml_path
     )

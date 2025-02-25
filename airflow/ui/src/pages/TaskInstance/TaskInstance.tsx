@@ -22,6 +22,7 @@ import { useParams, Link as RouterLink, useSearchParams } from "react-router-dom
 import { useDagServiceGetDagDetails, useTaskInstanceServiceGetMappedTaskInstance } from "openapi/queries";
 import { Breadcrumb } from "src/components/ui";
 import { DetailsLayout } from "src/layouts/Details/DetailsLayout";
+import { isStatePending, useAutoRefresh } from "src/utils";
 
 import { Header } from "./Header";
 
@@ -31,6 +32,7 @@ const tabs = [
   { label: "XCom", value: "xcom" },
   { label: "Code", value: "code" },
   { label: "Details", value: "details" },
+  { label: "Rendered Templates", value: "rendered_templates" },
 ];
 
 export const TaskInstance = () => {
@@ -40,16 +42,7 @@ export const TaskInstance = () => {
   const mapIndexParam = searchParams.get("map_index");
   const mapIndex = parseInt(mapIndexParam ?? "-1", 10);
 
-  const {
-    data: taskInstance,
-    error,
-    isLoading,
-  } = useTaskInstanceServiceGetMappedTaskInstance({
-    dagId,
-    dagRunId: runId,
-    mapIndex,
-    taskId,
-  });
+  const refetchInterval = useAutoRefresh({ dagId });
 
   const {
     data: dag,
@@ -58,6 +51,23 @@ export const TaskInstance = () => {
   } = useDagServiceGetDagDetails({
     dagId,
   });
+
+  const {
+    data: taskInstance,
+    error,
+    isLoading,
+  } = useTaskInstanceServiceGetMappedTaskInstance(
+    {
+      dagId,
+      dagRunId: runId,
+      mapIndex,
+      taskId,
+    },
+    undefined,
+    {
+      refetchInterval: (query) => (isStatePending(query.state.data?.state) ? refetchInterval : false),
+    },
+  );
 
   const links = [
     { label: "Dags", value: "/dags" },
@@ -89,7 +99,12 @@ export const TaskInstance = () => {
           );
         })}
       </Breadcrumb.Root>
-      {taskInstance === undefined ? undefined : <Header taskInstance={taskInstance} />}
+      {taskInstance === undefined ? undefined : (
+        <Header
+          isRefreshing={Boolean(isStatePending(taskInstance.state) && Boolean(refetchInterval))}
+          taskInstance={taskInstance}
+        />
+      )}
     </DetailsLayout>
   );
 };

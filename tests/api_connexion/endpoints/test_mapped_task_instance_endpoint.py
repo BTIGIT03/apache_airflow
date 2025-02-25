@@ -129,7 +129,7 @@ class TestMappedTaskInstanceEndpoint:
             self.app.dag_bag.sync_to_db("dags-folder", None)
             session.flush()
 
-            mapped.expand_mapped_task(dr.run_id, session=session)
+            TaskMap.expand_mapped_task(mapped, dr.run_id, session=session)
 
     @pytest.fixture
     def one_task_with_mapped_tis(self, dag_maker, session):
@@ -226,8 +226,9 @@ class TestGetMappedTaskInstance(TestMappedTaskInstanceEndpoint):
             "priority_weight": 1,
             "queue": "default",
             "queued_when": None,
+            "scheduled_when": None,
             "rendered_fields": {},
-            "rendered_map_index": None,
+            "rendered_map_index": "0",
             "start_date": "2020-01-01T00:00:00+00:00",
             "state": "success",
             "task_id": "task_2",

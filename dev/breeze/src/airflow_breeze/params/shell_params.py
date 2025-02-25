@@ -351,7 +351,7 @@ class ShellParams:
             self.mount_sources = MOUNT_REMOVE
         if self.mount_sources in USE_AIRFLOW_MOUNT_SOURCES and self.use_airflow_version is None:
             get_console().print(
-                "[error]You need to specify --use-airflow-version when using one of the"
+                "[error]You need to specify `--use-airflow-version wheel | sdist` when using one of the"
                 f"{USE_AIRFLOW_MOUNT_SOURCES} mount sources[/]"
             )
             sys.exit(1)
@@ -507,6 +507,7 @@ class ShellParams:
         _set_var(_env, "AIRFLOW_VERSION", self.airflow_version)
         _set_var(_env, "AIRFLOW__CELERY__BROKER_URL", self.airflow_celery_broker_url)
         _set_var(_env, "AIRFLOW__CORE__EXECUTOR", self.executor)
+        _set_var(_env, "AIRFLOW__FASTAPI__BASE_URL", f"http://localhost:{FASTAPI_API_HOST_PORT}")
         if self.executor == EDGE_EXECUTOR:
             _set_var(
                 _env, "AIRFLOW__CORE__EXECUTOR", "airflow.providers.edge.executors.edge_executor.EdgeExecutor"
