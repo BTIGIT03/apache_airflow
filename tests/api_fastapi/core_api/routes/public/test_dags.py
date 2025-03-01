@@ -16,14 +16,15 @@
 # under the License.
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from unittest import mock
 
 import pendulum
 import pytest
 
 from airflow.models.dag import DagModel, DagTag
 from airflow.models.dagrun import DagRun
-from airflow.operators.empty import EmptyOperator
+from airflow.providers.standard.operators.empty import EmptyOperator
 from airflow.utils.session import provide_session
 from airflow.utils.state import DagRunState, TaskInstanceState
 from airflow.utils.types import DagRunTriggeredByType, DagRunType
@@ -35,6 +36,7 @@ pytestmark = pytest.mark.db_test
 DAG1_ID = "test_dag1"
 DAG1_DISPLAY_NAME = "display1"
 DAG2_ID = "test_dag2"
+DAG1_START_DATE = datetime(2018, 6, 15, 0, 0, tzinfo=timezone.utc)
 DAG2_START_DATE = datetime(2021, 6, 15, tzinfo=timezone.utc)
 DAG3_ID = "test_dag3"
 DAG4_ID = "test_dag4"
@@ -44,6 +46,8 @@ DAG5_DISPLAY_NAME = "display5"
 TASK_ID = "op1"
 UTC_JSON_REPR = "UTC" if pendulum.__version__.startswith("3") else "Timezone('UTC')"
 API_PREFIX = "/public/dags"
+DAG3_START_DATE_1 = datetime(2018, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+DAG3_START_DATE_2 = datetime(2019, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
 
 
 class TestDagEndpoint:
@@ -70,7 +74,7 @@ class TestDagEndpoint:
             dag_id=DAG3_ID,
             run_id="run1",
             logical_date=datetime(2018, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
-            start_date=datetime(2018, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
+            start_date=DAG3_START_DATE_1,
             run_type=DagRunType.SCHEDULED,
             state=DagRunState.FAILED,
             triggered_by=DagRunTriggeredByType.TEST,
@@ -80,7 +84,7 @@ class TestDagEndpoint:
             dag_id=DAG3_ID,
             run_id="run2",
             logical_date=datetime(2019, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
-            start_date=datetime(2019, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
+            start_date=DAG3_START_DATE_2,
             run_type=DagRunType.MANUAL,
             state=DagRunState.SUCCESS,
             triggered_by=DagRunTriggeredByType.TEST,
@@ -104,7 +108,7 @@ class TestDagEndpoint:
             DAG1_ID,
             dag_display_name=DAG1_DISPLAY_NAME,
             schedule=None,
-            start_date=datetime(2018, 6, 15, 0, 0, tzinfo=timezone.utc),
+            start_date=DAG1_START_DATE,
             doc_md="details",
             params={"foo": 1},
             tags=["example"],
@@ -154,6 +158,58 @@ class TestGetDags(TestDagEndpoint):
             ({"owners": ["test_owner"], "only_active": False}, 1, [DAG3_ID]),
             ({"last_dag_run_state": "success", "only_active": False}, 1, [DAG3_ID]),
             ({"last_dag_run_state": "failed", "only_active": False}, 1, [DAG1_ID]),
+            ({"dag_run_state": "failed"}, 1, [DAG1_ID]),
+            ({"dag_run_state": "failed", "only_active": False}, 2, [DAG1_ID, DAG3_ID]),
+            (
+                {"dag_run_start_date_gte": DAG3_START_DATE_2.isoformat(), "only_active": False},
+                1,
+                [DAG3_ID],
+            ),
+            (
+                {
+                    "dag_run_start_date_gte": DAG1_START_DATE.isoformat(),
+                    "dag_run_start_date_lte": DAG2_START_DATE.isoformat(),
+                },
+                1,
+                [DAG1_ID],
+            ),
+            (
+                {
+                    "dag_run_end_date_lte": (datetime.now(tz=timezone.utc) + timedelta(days=1)).isoformat(),
+                    "only_active": False,
+                },
+                2,
+                [DAG1_ID, DAG3_ID],
+            ),
+            (
+                {
+                    "dag_run_end_date_gte": DAG3_START_DATE_2.isoformat(),
+                    "dag_run_end_date_lte": (datetime.now(tz=timezone.utc) + timedelta(days=1)).isoformat(),
+                    "only_active": False,
+                    "last_dag_run_state": "success",
+                },
+                1,
+                [DAG3_ID],
+            ),
+            (
+                {
+                    "dag_run_start_date_gte": DAG2_START_DATE.isoformat(),
+                    "dag_run_end_date_lte": (datetime.now(tz=timezone.utc) + timedelta(days=1)).isoformat(),
+                },
+                0,
+                [],
+            ),
+            (
+                {
+                    "dag_run_start_date_gte": (DAG3_START_DATE_1 - timedelta(days=1)).isoformat(),
+                    "dag_run_start_date_lte": (DAG3_START_DATE_1 + timedelta(days=1)).isoformat(),
+                    "last_dag_run_state": "success",
+                    "dag_run_state": "failed",
+                    "only_active": False,
+                },
+                1,
+                [DAG3_ID],
+            ),
             # # Sort
             ({"order_by": "-dag_id"}, 2, [DAG2_ID, DAG1_ID]),
             ({"order_by": "-dag_display_name"}, 2, [DAG2_ID, DAG1_ID]),
@@ -278,6 +334,7 @@ class TestDagDetails(TestDagEndpoint):
             ({}, DAG2_ID, 200, DAG2_ID, "2021-06-15T00:00:00Z"),
         ],
     )
+    @pytest.mark.usefixtures("configure_git_connection_for_dag_bundle")
     def test_dag_details(
         self, test_client, query_params, dag_id, expected_status_code, dag_display_name, start_date
     ):
@@ -309,20 +366,29 @@ class TestDagDetails(TestDagEndpoint):
             "is_active": True,
             "is_paused": False,
             "is_paused_upon_creation": None,
+            "latest_dag_version": {
+                "bundle_name": "dag_maker",
+                "bundle_url": None,
+                "bundle_version": None,
+                "created_at": mock.ANY,
+                "dag_id": "test_dag2",
+                "id": mock.ANY,
+                "version_number": 1,
+            },
             "last_expired": None,
             "last_parsed": last_parsed,
             "last_parsed_time": last_parsed_time,
             "max_active_runs": 16,
             "max_active_tasks": 16,
             "max_consecutive_failed_dag_runs": 0,
-            "next_dagrun": None,
-            "next_dagrun_create_after": None,
             "next_dagrun_data_interval_end": None,
             "next_dagrun_data_interval_start": None,
+            "next_dagrun_logical_date": None,
+            "next_dagrun_run_after": None,
             "owners": ["airflow"],
             "params": {
                 "foo": {
-                    "__class": "airflow.models.param.Param",
+                    "__class": "airflow.sdk.definitions.param.Param",
                     "description": None,
                     "schema": {},
                     "value": 1,
@@ -370,13 +436,13 @@ class TestGetDag(TestDagEndpoint):
             "owners": ["airflow"],
             "timetable_summary": None,
             "tags": [],
-            "next_dagrun": None,
             "has_task_concurrency_limits": True,
             "next_dagrun_data_interval_start": None,
             "next_dagrun_data_interval_end": None,
+            "next_dagrun_logical_date": None,
+            "next_dagrun_run_after": None,
             "max_active_runs": 16,
             "max_consecutive_failed_dag_runs": 0,
-            "next_dagrun_create_after": None,
             "last_expired": None,
             "max_active_tasks": 16,
             "default_view": "grid",
@@ -419,6 +485,7 @@ class TestDeleteDAG(TestDagEndpoint):
             (DAG5_ID, DAG5_DISPLAY_NAME, 409, 200, True, True),
         ],
     )
+    @pytest.mark.usefixtures("configure_git_connection_for_dag_bundle")
     def test_delete_dag(
         self,
         dag_maker,

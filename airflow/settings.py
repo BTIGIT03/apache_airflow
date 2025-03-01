@@ -48,8 +48,6 @@ if TYPE_CHECKING:
     from sqlalchemy.engine import Engine
     from sqlalchemy.orm import Session as SASession
 
-    from airflow.www.utils import UIAlert
-
 log = logging.getLogger(__name__)
 
 try:
@@ -328,7 +326,7 @@ def _is_sqlite_db_path_relative(sqla_conn_str: str) -> bool:
 
 def configure_orm(disable_connection_pool=False, pool_class=None):
     """Configure ORM using SQLAlchemy."""
-    from airflow.utils.log.secrets_masker import mask_secret
+    from airflow.sdk.execution_time.secrets_masker import mask_secret
 
     if _is_sqlite_db_path_relative(SQL_ALCHEMY_CONN):
         from airflow.exceptions import AirflowConfigException
@@ -652,13 +650,6 @@ def initialize():
     atexit.register(dispose_orm)
 
 
-def is_usage_data_collection_enabled() -> bool:
-    """Check if data collection is enabled."""
-    return conf.getboolean("usage_data_collection", "enabled", fallback=True) and (
-        os.getenv("SCARF_ANALYTICS", "").strip().lower() != "false"
-    )
-
-
 # Const stuff
 
 KILOBYTE = 1024
@@ -683,8 +674,6 @@ EXECUTE_TASKS_NEW_PYTHON_INTERPRETER = not CAN_FORK or conf.getboolean(
     "execute_tasks_new_python_interpreter",
     fallback=False,
 )
-
-ALLOW_FUTURE_LOGICAL_DATES = conf.getboolean("scheduler", "allow_trigger_in_future", fallback=False)
 
 USE_JOB_SCHEDULE = conf.getboolean("scheduler", "use_job_schedule", fallback=True)
 
@@ -715,21 +704,6 @@ HIDE_SENSITIVE_VAR_CONN_FIELDS = conf.getboolean("core", "hide_sensitive_var_con
 # By default this is off, but is automatically configured on when running task
 # instances
 MASK_SECRETS_IN_LOGS = False
-
-# Display alerts on the dashboard
-# Useful for warning about setup issues or announcing changes to end users
-# List of UIAlerts, which allows for specifying the message, category, and roles the
-# message should be shown to. For example:
-#   from airflow.www.utils import UIAlert
-#
-#   DASHBOARD_UIALERTS = [
-#       UIAlert("Welcome to Airflow"),  # All users
-#       UIAlert("Airflow update happening next week", roles=["User"]),  # Only users with the User role
-#       # A flash message with html:
-#       UIAlert('Visit <a href="http://airflow.apache.org">airflow.apache.org</a>', html=True),
-#   ]
-#
-DASHBOARD_UIALERTS: list[UIAlert] = []
 
 # Prefix used to identify tables holding data moved during migration.
 AIRFLOW_MOVED_TABLE_PREFIX = "_airflow_moved"

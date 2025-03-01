@@ -30,6 +30,8 @@ from rich.console import Console
 
 AIRFLOW_SOURCES_ROOT_PATH = Path(__file__).parents[3].resolve()
 AIRFLOW_BREEZE_SOURCES_PATH = AIRFLOW_SOURCES_ROOT_PATH / "dev" / "breeze"
+AIRFLOW_PROVIDERS_ROOT_PATH = AIRFLOW_SOURCES_ROOT_PATH / "providers"
+
 DEFAULT_PYTHON_MAJOR_MINOR_VERSION = "3.9"
 
 console = Console(width=400, color_system="standard")
@@ -48,28 +50,31 @@ def read_airflow_version() -> str:
 def pre_process_files(files: list[str]) -> list[str]:
     """Pre-process files passed to mypy.
 
+    * Exclude conftest.py files and __init__.py files
     * When running build on non-main branch do not take providers into account.
     * When running "airflow/providers" package, then we need to add --namespace-packages flag.
     * When running "airflow" package, then we need to exclude providers.
     """
+
+    files = [file for file in files if not file.endswith("conftest.py") and not file.endswith("__init__.py")]
     default_branch = os.environ.get("DEFAULT_BRANCH")
     if not default_branch or default_branch == "main":
         return files
-    result = [file for file in files if not file.startswith(f"airflow{os.sep}providers")]
+    result = [file for file in files if not file.startswith("providers")]
     if "airflow/providers" in files:
         if len(files) > 1:
             raise RuntimeError(
                 "When running `airflow/providers` package, you cannot run any other packages because only "
                 "airflow/providers package requires --namespace-packages flag to be set"
             )
-        result.append("--namespace-packages")
+        result.append("--no-namespace-packages")
     if "airflow" in files:
         if len(files) > 1:
             raise RuntimeError(
                 "When running `airflow` package, you cannot run any other packages because only "
-                "airflow/providers package requires --exclude airflow/providers/.* flag to be set"
+                "airflow/providers package requires --exclude providers/.* flag to be set"
             )
-        result.extend(["--exclude", "airflow/providers/.*"])
+        result.extend(["--exclude", "providers/.*"])
     return result
 
 
@@ -259,3 +264,44 @@ def get_provider_base_dir_from_path(file_path: Path) -> Path | None:
         if (parent / "provider.yaml").exists():
             return parent
     return None
+
+
+def get_all_provider_ids() -> list[str]:
+    """
+    Get all providers from the new provider structure
+    """
+    all_provider_ids = []
+    for provider_file in AIRFLOW_PROVIDERS_ROOT_PATH.rglob("provider.yaml"):
+        if provider_file.is_relative_to(AIRFLOW_PROVIDERS_ROOT_PATH / "src"):
+            continue
+        provider_id = get_provider_id_from_path(provider_file)
+        if provider_id:
+            all_provider_ids.append(provider_id)
+    return all_provider_ids
+
+
+def get_all_provider_yaml_files() -> list[Path]:
+    """
+    Get all providers from the new provider structure
+    """
+    all_provider_yaml_files = []
+    for provider_file in AIRFLOW_PROVIDERS_ROOT_PATH.rglob("provider.yaml"):
+        if provider_file.is_relative_to(AIRFLOW_PROVIDERS_ROOT_PATH / "src"):
+            continue
+        all_provider_yaml_files.append(provider_file)
+    return all_provider_yaml_files
+
+
+def get_all_provider_info_dicts() -> dict[str, dict]:
+    """
+    Get provider yaml info for all providers from the new provider structure
+    """
+    providers: dict[str, dict] = {}
+    for provider_file in get_all_provider_yaml_files():
+        provider_id = str(provider_file.parent.relative_to(AIRFLOW_PROVIDERS_ROOT_PATH)).replace(os.sep, ".")
+        import yaml
+
+        provider_info = yaml.safe_load(provider_file.read_text())
+        if provider_info["state"] != "suspended":
+            providers[provider_id] = provider_info
+    return providers

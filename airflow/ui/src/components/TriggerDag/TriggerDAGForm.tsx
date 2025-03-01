@@ -16,7 +16,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { Input, Button, Box, Spacer, HStack, Field } from "@chakra-ui/react";
+import { Input, Button, Box, Spacer, HStack, Field, Stack } from "@chakra-ui/react";
 import { json } from "@codemirror/lang-json";
 import { githubLight, githubDark } from "@uiw/codemirror-themes-all";
 import CodeMirror from "@uiw/react-codemirror";
@@ -28,8 +28,11 @@ import { useColorMode } from "src/context/colorMode";
 import { useDagParams } from "src/queries/useDagParams";
 import { useTrigger } from "src/queries/useTrigger";
 
+import EditableMarkdown from "../EditableMarkdown";
 import { ErrorAlert } from "../ErrorAlert";
+import { FlexibleForm, flexibleFormDefaultSection } from "../FlexibleForm";
 import { Accordion } from "../ui";
+import { useParamStore } from "./useParamStore";
 
 type TriggerDAGFormProps = {
   readonly dagId: string;
@@ -40,33 +43,21 @@ type TriggerDAGFormProps = {
 export type DagRunTriggerParams = {
   conf: string;
   dagRunId: string;
-  dataIntervalEnd: string;
-  dataIntervalStart: string;
+  logicalDate: string;
   note: string;
 };
 
 const TriggerDAGForm = ({ dagId, onClose, open }: TriggerDAGFormProps) => {
   const [errors, setErrors] = useState<{ conf?: string; date?: unknown }>({});
-  const conf = useDagParams(dagId, open);
-  const {
-    dateValidationError,
-    error: errorTrigger,
-    isPending,
-    triggerDagRun,
-  } = useTrigger({ onSuccessConfirm: onClose });
+  const initialParamsDict = useDagParams(dagId, open);
+  const { error: errorTrigger, isPending, triggerDagRun } = useTrigger({ dagId, onSuccessConfirm: onClose });
+  const { conf, setConf } = useParamStore();
 
-  const {
-    control,
-    formState: { isDirty },
-    handleSubmit,
-    reset,
-    watch,
-  } = useForm<DagRunTriggerParams>({
+  const { control, handleSubmit, reset } = useForm<DagRunTriggerParams>({
     defaultValues: {
       conf,
       dagRunId: "",
-      dataIntervalEnd: "",
-      dataIntervalStart: "",
+      logicalDate: "",
       note: "",
     },
   });
@@ -78,28 +69,8 @@ const TriggerDAGForm = ({ dagId, onClose, open }: TriggerDAGFormProps) => {
     }
   }, [conf, reset]);
 
-  useEffect(() => {
-    if (Boolean(dateValidationError)) {
-      setErrors((prev) => ({ ...prev, date: dateValidationError }));
-    }
-  }, [dateValidationError]);
-
-  const dataIntervalStart = watch("dataIntervalStart");
-  const dataIntervalEnd = watch("dataIntervalEnd");
-
-  const handleReset = () => {
-    setErrors({ conf: undefined, date: undefined });
-    reset({
-      conf,
-      dagRunId: "",
-      dataIntervalEnd: "",
-      dataIntervalStart: "",
-      note: "",
-    });
-  };
-
   const onSubmit = (data: DagRunTriggerParams) => {
-    triggerDagRun(dagId, data);
+    triggerDagRun(data);
   };
 
   const validateAndPrettifyJson = (value: string) => {
@@ -108,7 +79,13 @@ const TriggerDAGForm = ({ dagId, onClose, open }: TriggerDAGFormProps) => {
 
       setErrors((prev) => ({ ...prev, conf: undefined }));
 
-      return JSON.stringify(parsedJson, undefined, 2);
+      const formattedJson = JSON.stringify(parsedJson, undefined, 2);
+
+      if (formattedJson !== conf) {
+        setConf(formattedJson); // Update only if the value is different
+      }
+
+      return formattedJson;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : "Unknown error occurred.";
 
@@ -129,43 +106,38 @@ const TriggerDAGForm = ({ dagId, onClose, open }: TriggerDAGFormProps) => {
 
   return (
     <>
-      <Accordion.Root collapsible mb={4} mt={4} size="lg" variant="enclosed">
+      <Accordion.Root
+        collapsible
+        defaultValue={[flexibleFormDefaultSection]}
+        mb={4}
+        mt={4}
+        size="lg"
+        variant="enclosed"
+      >
+        <FlexibleForm initialParamsDict={initialParamsDict} />
         <Accordion.Item key="advancedOptions" value="advancedOptions">
           <Accordion.ItemTrigger cursor="button">Advanced Options</Accordion.ItemTrigger>
           <Accordion.ItemContent>
             <Box p={5}>
               <Controller
                 control={control}
-                name="dataIntervalStart"
+                name="logicalDate"
                 render={({ field }) => (
-                  <Field.Root invalid={Boolean(errors.date)}>
-                    <Field.Label fontSize="md">Data Interval Start Date</Field.Label>
-                    <Input
-                      {...field}
-                      max={dataIntervalEnd || undefined}
-                      onBlur={resetDateError}
-                      placeholder="yyyy-mm-ddThh:mm"
-                      size="sm"
-                      type="datetime-local"
-                    />
-                  </Field.Root>
-                )}
-              />
-
-              <Controller
-                control={control}
-                name="dataIntervalEnd"
-                render={({ field }) => (
-                  <Field.Root invalid={Boolean(errors.date)} mt={6}>
-                    <Field.Label fontSize="md">Data Interval End Date</Field.Label>
-                    <Input
-                      {...field}
-                      min={dataIntervalStart || undefined}
-                      onBlur={resetDateError}
-                      placeholder="yyyy-mm-ddThh:mm"
-                      size="sm"
-                      type="datetime-local"
-                    />
+                  <Field.Root invalid={Boolean(errors.date)} orientation="horizontal">
+                    <Stack>
+                      <Field.Label fontSize="md" style={{ flexBasis: "30%" }}>
+                        Logical Date
+                      </Field.Label>
+                    </Stack>
+                    <Stack css={{ flexBasis: "70%" }}>
+                      <Input
+                        {...field}
+                        onBlur={resetDateError}
+                        placeholder="yyyy-mm-ddThh:mm"
+                        size="sm"
+                        type="datetime-local"
+                      />
+                    </Stack>
                   </Field.Root>
                 )}
               />
@@ -174,13 +146,16 @@ const TriggerDAGForm = ({ dagId, onClose, open }: TriggerDAGFormProps) => {
                 control={control}
                 name="dagRunId"
                 render={({ field }) => (
-                  <Field.Root mt={6}>
-                    <Field.Label fontSize="md">Run ID</Field.Label>
-                    <Input
-                      {...field}
-                      placeholder="Run Id, optional - will be generated if not provided"
-                      size="sm"
-                    />
+                  <Field.Root mt={6} orientation="horizontal">
+                    <Stack>
+                      <Field.Label fontSize="md" style={{ flexBasis: "30%" }}>
+                        Run ID
+                      </Field.Label>
+                    </Stack>
+                    <Stack css={{ flexBasis: "70%" }}>
+                      <Input {...field} size="sm" />
+                      <Field.HelperText>Optional - will be generated if not provided</Field.HelperText>
+                    </Stack>
                   </Field.Root>
                 )}
               />
@@ -205,7 +180,7 @@ const TriggerDAGForm = ({ dagId, onClose, open }: TriggerDAGFormProps) => {
                         field.onChange(validateAndPrettifyJson(field.value));
                       }}
                       style={{
-                        border: "1px solid #CBD5E0",
+                        border: "1px solid var(--chakra-colors-border)",
                         borderRadius: "8px",
                         outline: "none",
                         padding: "2px",
@@ -224,7 +199,7 @@ const TriggerDAGForm = ({ dagId, onClose, open }: TriggerDAGFormProps) => {
                 render={({ field }) => (
                   <Field.Root mt={6}>
                     <Field.Label fontSize="md">Dag Run Notes</Field.Label>
-                    <Input {...field} placeholder="Optional" size="sm" />
+                    <EditableMarkdown field={field} placeholder="Click to add note" />
                   </Field.Root>
                 )}
               />
@@ -235,11 +210,6 @@ const TriggerDAGForm = ({ dagId, onClose, open }: TriggerDAGFormProps) => {
       <ErrorAlert error={errors.date ?? errorTrigger} />
       <Box as="footer" display="flex" justifyContent="flex-end" mt={4}>
         <HStack w="full">
-          {isDirty ? (
-            <Button onClick={handleReset} variant="outline">
-              Reset
-            </Button>
-          ) : undefined}
           <Spacer />
           <Button
             colorPalette="blue"
