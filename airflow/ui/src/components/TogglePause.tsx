@@ -21,9 +21,13 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useCallback } from "react";
 
 import {
+  UseDagRunServiceGetDagRunsKeyFn,
   UseDagServiceGetDagDetailsKeyFn,
+  UseDagServiceGetDagKeyFn,
   useDagServiceGetDagsKey,
   useDagServicePatchDag,
+  useDagsServiceRecentDagRunsKey,
+  UseTaskInstanceServiceGetTaskInstancesKeyFn,
 } from "openapi/queries";
 import { useConfig } from "src/queries/useConfig";
 
@@ -42,13 +46,16 @@ export const TogglePause = ({ dagDisplayName, dagId, isPaused, skipConfirm }: Pr
   const { onClose, onOpen, open } = useDisclosure();
 
   const onSuccess = async () => {
-    await queryClient.invalidateQueries({
-      queryKey: [useDagServiceGetDagsKey],
-    });
+    const queryKeys = [
+      [useDagServiceGetDagsKey],
+      [useDagsServiceRecentDagRunsKey],
+      UseDagServiceGetDagKeyFn({ dagId }, [{ dagId }]),
+      UseDagServiceGetDagDetailsKeyFn({ dagId }, [{ dagId }]),
+      UseDagRunServiceGetDagRunsKeyFn({ dagId }, [{ dagId }]),
+      UseTaskInstanceServiceGetTaskInstancesKeyFn({ dagId, dagRunId: "~" }, [{ dagId, dagRunId: "~" }]),
+    ];
 
-    await queryClient.invalidateQueries({
-      queryKey: UseDagServiceGetDagDetailsKeyFn({ dagId }),
-    });
+    await Promise.all(queryKeys.map((key) => queryClient.invalidateQueries({ queryKey: key })));
   };
 
   const { mutate } = useDagServicePatchDag({

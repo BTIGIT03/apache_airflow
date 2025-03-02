@@ -31,7 +31,7 @@ Using Airflow Public Interfaces
 The following are some examples of the public interface of Airflow:
 
 * When you are writing your own operators or hooks. This is commonly done when no hook or operator exists for your use case, or when perhaps when one exists but you need to customize the behavior.
-* When writing new :doc:`Plugins <authoring-and-scheduling/plugins>` that extend Airflow's functionality beyond
+* When writing new :doc:`Plugins <administration-and-deployment/plugins>` that extend Airflow's functionality beyond
   DAG building blocks. Secrets, Timetables, Triggers, Listeners are all examples of such functionality. This
   is usually done by users who manage Airflow instances.
 * Bundling custom Operators, Hooks, Plugins and releasing them together via
@@ -62,7 +62,7 @@ DAGs
 The DAG is Airflow's core entity that represents a recurring workflow. You can create a DAG by
 instantiating the :class:`~airflow.models.dag.DAG` class in your DAG file. You can also instantiate
 them via :class:`~airflow.models.dagbag.DagBag` class that reads DAGs from a file or a folder. DAGs
-can also have parameters specified via :class:`~airflow.models.param.Param` class.
+can also have parameters specified via :class:`~airflow.sdk.definitions.param.Param` class.
 
 Airflow has a set of example DAGs that you can use to learn how to write DAGs
 
@@ -208,7 +208,7 @@ Airflow uses Plugin mechanism to extend Airflow platform capabilities. They allo
 Airflow UI but also they are the way to expose the below customizations (Triggers, Timetables, Listeners, etc.).
 Providers can also implement plugin endpoints and customize Airflow UI and the customizations.
 
-You can read more about plugins in :doc:`authoring-and-scheduling/plugins`. You can read how to extend
+You can read more about plugins in :doc:`administration-and-deployment/plugins`. You can read how to extend
 Airflow UI in :doc:`howto/custom-view-plugin`. Note that there are some simple customizations of the UI
 that do not require plugins - you can read more about them in :doc:`howto/customize-ui`.
 

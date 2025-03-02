@@ -37,6 +37,11 @@ def make_client(transport: httpx.MockTransport) -> Client:
     return Client(base_url="test://server", token="", transport=transport)
 
 
+def make_client_w_dry_run() -> Client:
+    """Get a client with dry_run enabled"""
+    return Client(base_url=None, dry_run=True, token="")
+
+
 def make_client_w_responses(responses: list[httpx.Response]) -> Client:
     """Helper fixture to create a mock client with custom responses."""
 
@@ -49,6 +54,34 @@ def make_client_w_responses(responses: list[httpx.Response]) -> Client:
 
 
 class TestClient:
+    @pytest.mark.parametrize(
+        ["path", "json_response"],
+        [
+            (
+                "/task-instances/1/run",
+                {
+                    "dag_run": {
+                        "dag_id": "test_dag",
+                        "run_id": "test_run",
+                        "logical_date": "2021-01-01T00:00:00Z",
+                        "start_date": "2021-01-01T00:00:00Z",
+                        "run_type": "manual",
+                        "run_after": "2021-01-01T00:00:00Z",
+                    },
+                    "max_tries": 0,
+                },
+            ),
+        ],
+    )
+    def test_dry_run(self, path, json_response):
+        client = make_client_w_dry_run()
+        assert client.base_url == "dry-run://server"
+
+        resp = client.get(path)
+
+        assert resp.status_code == 200
+        assert resp.json() == json_response
+
     def test_error_parsing(self):
         responses = [
             httpx.Response(422, json={"detail": [{"loc": ["#0"], "msg": "err", "type": "required"}]})
@@ -195,7 +228,9 @@ class TestTaskInstanceOperations:
         assert resp == ti_context
         assert call_count == 4
 
-    @pytest.mark.parametrize("state", [state for state in TerminalTIState])
+    @pytest.mark.parametrize(
+        "state", [state for state in TerminalTIState if state != TerminalTIState.SUCCESS]
+    )
     def test_task_instance_finish(self, state):
         # Simulate a successful response from the server that finishes (moved to terminal state) a task
         ti_id = uuid6.uuid7()
@@ -233,14 +268,24 @@ class TestTaskInstanceOperations:
         # Simulate a successful response from the server that defers a task
         ti_id = uuid6.uuid7()
 
+        msg = DeferTask(
+            classpath="airflow.providers.standard.triggers.temporal.DateTimeTrigger",
+            next_method="execute_complete",
+            trigger_kwargs={
+                "__type": "dict",
+                "__var": {
+                    "moment": {"__type": "datetime", "__var": 1730982899.0},
+                    "end_from_trigger": False,
+                },
+            },
+            next_kwargs={"__type": "dict", "__var": {}},
+        )
+
         def handle_request(request: httpx.Request) -> httpx.Response:
             if request.url.path == f"/task-instances/{ti_id}/state":
                 actual_body = json.loads(request.read())
                 assert actual_body["state"] == "deferred"
-                assert actual_body["trigger_kwargs"] == {
-                    "moment": "2024-11-07T12:34:59Z",
-                    "end_from_trigger": False,
-                }
+                assert actual_body["trigger_kwargs"] == msg.trigger_kwargs
                 assert (
                     actual_body["classpath"] == "airflow.providers.standard.triggers.temporal.DateTimeTrigger"
                 )
@@ -251,11 +296,6 @@ class TestTaskInstanceOperations:
             return httpx.Response(status_code=400, json={"detail": "Bad Request"})
 
         client = make_client(transport=httpx.MockTransport(handle_request))
-        msg = DeferTask(
-            classpath="airflow.providers.standard.triggers.temporal.DateTimeTrigger",
-            trigger_kwargs={"moment": "2024-11-07T12:34:59Z", "end_from_trigger": False},
-            next_method="execute_complete",
-        )
         client.task_instances.defer(ti_id, msg)
 
     def test_task_instance_reschedule(self):
@@ -553,6 +593,33 @@ class TestXCOMOperations:
             key="key",
             value="value1",
             map_index=2,
+        )
+        assert result == {"ok": True}
+
+    def test_xcom_set_with_mapped_length(self):
+        # Simulate a successful response from the server when setting an xcom with mapped_length
+        def handle_request(request: httpx.Request) -> httpx.Response:
+            if (
+                request.url.path == "/xcoms/dag_id/run_id/task_id/key"
+                and request.url.params.get("map_index") == "2"
+                and request.url.params.get("mapped_length") == "3"
+            ):
+                assert json.loads(request.read()) == "value1"
+                return httpx.Response(
+                    status_code=201,
+                    json={"message": "XCom successfully set"},
+                )
+            return httpx.Response(status_code=400, json={"detail": "Bad Request"})
+
+        client = make_client(transport=httpx.MockTransport(handle_request))
+        result = client.xcoms.set(
+            dag_id="dag_id",
+            run_id="run_id",
+            task_id="task_id",
+            key="key",
+            value="value1",
+            map_index=2,
+            mapped_length=3,
         )
         assert result == {"ok": True}
 

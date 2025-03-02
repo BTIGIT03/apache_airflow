@@ -31,9 +31,9 @@ if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
     from airflow.io.path import ObjectStoragePath
-    from airflow.models.param import ParamsDict
     from airflow.sdk.definitions.asset import AssetAlias, AssetUniqueKey
     from airflow.sdk.definitions.dag import DAG, DagStateChangeCallback, ScheduleArg
+    from airflow.sdk.definitions.param import ParamsDict
     from airflow.serialization.dag_dependency import DagDependency
     from airflow.triggers.base import BaseTrigger
     from airflow.typing_compat import Self
@@ -171,6 +171,7 @@ class _DAGFactory:
             dag_id=dag_id,
             schedule=self.schedule,
             is_paused_upon_creation=self.is_paused_upon_creation,
+            catchup=False,
             dag_display_name=self.display_name or dag_id,
             description=self.description,
             params=self.params,
@@ -196,8 +197,6 @@ class asset(_DAGFactory):
         outlets: Collection[BaseAsset]  # TODO: Support non-asset outlets?
 
         def __call__(self, f: Callable) -> MultiAssetDefinition:
-            if self.schedule is not None:
-                raise NotImplementedError("asset scheduling not implemented yet")
             if f.__name__ != f.__qualname__:
                 raise ValueError("nested function not supported")
             if not self.outlets:
@@ -205,12 +204,8 @@ class asset(_DAGFactory):
             return MultiAssetDefinition(function=f, source=self)
 
     def __call__(self, f: Callable) -> AssetDefinition:
-        if self.schedule is not None:
-            raise NotImplementedError("asset scheduling not implemented yet")
-
         if (name := f.__name__) != f.__qualname__:
             raise ValueError("nested function not supported")
-
         return AssetDefinition(
             name=name,
             uri=name if self.uri is None else str(self.uri),

@@ -82,7 +82,10 @@ default by Breeze. Here's how to install breeze with `uv`
 1. Install `uv` - see [uv documentation](https://docs.astral.sh/uv/getting-started/installation/)
 
 > [!IMPORTANT]
-> All the commands below should be executed while you are in `dev/breeze` directory of the Airflow repository.
+>
+> 1. The version of `uv` should be at least as defined in `pyproject.toml` under `[tool.uv]` section, otherwise some breeze commands might malfunction.
+> 2. All the commands below should be executed while you are in `dev/breeze` directory of the Airflow repository.
+>
 
 2. Create a new virtual environment for Breeze development:
 
@@ -128,6 +131,6 @@ PLEASE DO NOT MODIFY THE HASH BELOW! IT IS AUTOMATICALLY UPDATED BY PRE-COMMIT.
 
 ---------------------------------------------------------------------------------------------------------
 
-Package config hash: 79fadb6850f8cd60994498d51df4f29046aab45e4bb15944afe8bbeacf76770e379d0462dced117e4dc911426dff136fef9b2d6a930957f829413e0ae2261cc9
+Package config hash: 90b17b407c28dc0aad4520f837ebfd770c363064127b9e5698d71bedf31a6d68034282c01495b92d79ae791f85b0360d9ac2e1caa84fb5084611aa68336f1c10
 
 ---------------------------------------------------------------------------------------------------------
